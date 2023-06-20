@@ -1,12 +1,16 @@
+import os
 import threading
 import tkinter as tk
 import json
 import time
 import datetime
+
+
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
 
 
 class App:
@@ -14,6 +18,7 @@ class App:
         self.http_okto = "http://app.okto.ru/companies/"
         self.http_order_new = "/oms_bussiness_orders/new"
         self.http_order = "/oms_bussiness_orders"
+        self.oms_settings = "/oms_settings/"
         # уникальное значение продукта
         self.SKU = ""
         # список продуктов
@@ -22,6 +27,8 @@ class App:
         self.workshop_name = None
         # уникальный номер личного кабинета(ЛК)
         self.workshop_id = None
+        # уникальный номер СУЗ
+        self.oms_id = None
         # логин личного кабинета
         self.workshop_login = None
         # пароль личного кабинета
@@ -40,6 +47,8 @@ class App:
         self.code_ordered = False
         # Флаг для проверки остановки по кнопке
         self.button_stop_flag = False
+        # Флаг для бесконечной попытки заказа кодов
+        self.while_run = True
         # Текст для проверки готовности заказа
         self.code_ready = "Готов (в наличии активные буферы КМ)"
         # Запуск потока, или его остановка
@@ -131,6 +140,30 @@ class App:
         self.button_stop.config(state=tk.DISABLED)
         self.button_stop_flag = True
 
+    def order_codes(self, driver, wait, workshop, product):
+            try:
+                self.code_ordered = False
+                # Отображение текущего заказа кодов
+                self.label_text.config(text="Идёт заказ:\n" + self.data_products[workshop][f"{product}"]["name"])
+                # Переход на страницу заказов
+                driver.get(self.http_okto + self.workshop_id + self.http_order_new)
+                # Очищаем поле кодов
+                wait.until(EC.presence_of_element_located((By.ID, "quantity"))).clear()
+                # Указываем количество кодов для заказа
+                wait.until(EC.presence_of_element_located((By.ID, "quantity"))).send_keys(self.quantity_codes)
+                self.SKU = wait.until(EC.presence_of_element_located((By.ID, "product_id")))
+                driver.execute_script(f"arguments[0].setAttribute('value', '{self.code_id}')", self.SKU)
+                # Отправка кодов
+                wait.until(EC.presence_of_element_located((By.NAME, "commit"))).click()
+                time.sleep(5)
+                # Переход на страницу заказов
+                driver.get(self.http_okto + self.workshop_id + self.http_order)
+                self.while_run = False
+            except Exception:
+                self.label_info.config(
+                    text="Не удалось заказать коды\nПовторная попытка через 30 секунд")
+                time.sleep(30)
+
     def run_task(self, workshop):
         # Выключение всех кнопок
         for button in (self.button_0, self.button_1, self.button_2, self.button_3):
@@ -140,20 +173,23 @@ class App:
         self.workshop_login = self.data_lk[self.workshop_name]["login"]
         self.workshop_password = self.data_lk[self.workshop_name]["password"]
         self.workshop_id = self.data_lk[self.workshop_name]["id"]
+        self.oms_id = self.data_lk[self.workshop_name]["oms_id"]
         self.quantity_codes = int(self.codes.get())
         options = webdriver.ChromeOptions()
+        service = Service('./chromedriver.exe')
         options.add_extension("extension_1_2_13_0.crx")
         options.add_argument("--start-maximized") # окно на весь экран
-        options.add_argument('--headless=new') # скрытая работа
         options.add_argument("--disable-gpu") # уменьшение использования графического процессора
         options.add_argument("--disable-infobars") # отключение информационной панели
         options.add_argument("--disable-notifications") # отключение уведомлений
         options.add_argument("--disable-dev-shm-usage") # отключает использование /dev/shm в Chrome
         options.add_argument("--no-sandbox") # отключение режима песочницы
-        driver = webdriver.Chrome(options=options)
+        # options.add_argument('--headless=new') # скрытая работа
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(4)
 
-        # Пауза с помощью Selenium 10 секунд
-        wait = WebDriverWait(driver, 10)
+        # Пауза с помощью Selenium 5 секунд
+        wait = WebDriverWait(driver, 3)
         # Если была остановка заказа
         if len(self.list_products) == 0 or workshop != self.last_workshop_name:
             self.list_products.clear()
@@ -167,98 +203,124 @@ class App:
             # Заказываем только необходимые коды
             if self.data_products[workshop][str(product)]["order"] and self.start_thread:
                 self.code_ordered = False
+                self.while_run = True
                 self.last_product_name = product
                 self.last_workshop_name = workshop
                 self.code_id = self.data_products[workshop][f"{product}"]["id"]
-                self.codes_info.config(text=f"Продукты в заказе:\n" + "\n".join(str(i) for i in self.list_products))
+                self.codes_info.config(text=f"Продукты в заказе:\n" + "\n".join(str(i) for i in self.list_products[self.list_products.index(product):]))
                 # Входим в систему
-                try:
-                    self.label_info.config(text=f"Выполняется заказ для цеха {workshop}")
-                    driver.get("http://app.okto.ru/users/sign_in")
-                    driver.find_element(By.ID, "user_email").send_keys(self.workshop_login)
-                    driver.find_element(By.ID, "user_password").send_keys(self.workshop_password)
-                    # Кнопка Sing in
-                    driver.find_element(By.ID, "sign_in_btn").click()
-                except Exception:
-                    self.label_info.config(text="Не удалось зайти на сайт ОКТО")
-                try:
-                    # Переход на страницу заказов для проверки текущего заказа кодов
-                    driver.get(self.http_okto + self.workshop_id + self.http_order)
-                    # Проверка на уже сделанный заказ. Только первый из всего списка
-                    while not self.code_ordered:
-                        if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == self.code_ready:
-                            self.label_info.config(text="Ожидание завершения прошлого заказа...\n"
-                                                        "Повторная попытка заказа через 30 секунд")
-                            time.sleep(20)
-                            driver.refresh()
-                        else:
-                            # Выходим из цикла проверки
-                            self.code_ordered = True
-                    self.code_ordered = False
-                    # Отображение текущего заказа кодов
-                    self.label_text.config(text="Идёт заказ:\n" + self.data_products[workshop][f"{product}"]["name"])
-                    # Переход на страницу заказов
-                    driver.get(self.http_okto + self.workshop_id + self.http_order_new)
-                    # Очищаем поле кодов
-                    wait.until(EC.presence_of_element_located((By.ID, "quantity"))).clear()
-                    # Указываем количество кодов для заказа
-                    wait.until(EC.presence_of_element_located((By.ID, "quantity"))).send_keys(self.quantity_codes)
-                    self.SKU = wait.until(EC.presence_of_element_located((By.ID, "product_id")))
-                    driver.execute_script(f"arguments[0].setAttribute('value', '{self.code_id}')", self.SKU)
-                    # Отправка кодов
-                    wait.until(EC.presence_of_element_located((By.NAME, "commit"))).click()
-                    time.sleep(2)
-                    # Переход на страницу заказов
-                    driver.get(self.http_okto + self.workshop_id + self.http_order)
-                    while self.start_thread and not self.code_ordered:
-                        driver.refresh()
-                        if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == self.code_ready and self.start_thread:
-                            # выбираем новый заказ
-                            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "order-id"))).click()
-                            time.sleep(2)
-                            # ставим галочку, что хотим получить коды
-                            wait.until(EC.presence_of_element_located((By.NAME, "check_gtin"))).click()
-                            time.sleep(2)
-                            driver.find_element(By.ID, value="obtain_identification_codes").click()
-                            time.sleep(2)
-                            # Нажимаем на кнопку для ввода количества кодов
-                            quantity = driver.find_element(By.ID, value="quantity")
-                            time.sleep(2)
-                            quantity.clear()
-                            quantity.send_keys(self.quantity_codes)
-                            time.sleep(2)
-                            driver.find_element(By.ID, value="submit_codes_form").click() # получение кодов из заказа
-                            self.code_ordered = True
-                        else:
-                            self.label_info.config(text="Ожидание появления заказа...")
+                time.sleep(1)
+                while self.while_run and self.start_thread:
+                    try:
+                        self.label_info.config(text=f"Выполняется заказ для цеха {workshop}")
+                        driver.get("http://app.okto.ru/users/sign_in")
+                        driver.find_element(By.ID, "user_email").send_keys(self.workshop_login)
+                        driver.find_element(By.ID, "user_password").send_keys(self.workshop_password)
+                        # Кнопка Sing in
+                        driver.find_element(By.ID, "sign_in_btn").click()
                         time.sleep(5)
-                except Exception as e:
-                    self.label_info.config(text="Не удалось выполнить задачу\nОбъект для заказа не найдет")
-                    with open("logs.txt", "a", encoding="UTF-8") as self.f:
-                        self.f.write(str(datetime.datetime.now()))
-                        self.f.write(str(e))
-                    self.label_text.config(text="Во время заказа кодов продукта:\n"
-                                                + self.data_products[workshop][str(product)]["name"]
-                                                + "\nВозникла ошибка" + "\nСообщите разработчику")
-                    self.start_thread = False
-                    for button in (self.button_0, self.button_1, self.button_2, self.button_3):
-                        button.config(state=tk.NORMAL)
-                    self.button_stop.config(state=tk.DISABLED)
-                finally:
-                    self.label_info.config(text="Заказ " + self.data_products[workshop][str(product)]["name"] + " завершен")
-                    time.sleep(2)
-                    driver.find_element(By.ID, value="logout_link").click()
+                        self.while_run = False
+                    except Exception:
+                        self.label_info.config(text="Не удалось зайти на сайт ОКТО\nПовторная попытка через 30 секунд")
+                        time.sleep(30)
+                self.while_run = True
+                while self.while_run and self.start_thread:
+                    try:
+                        self.label_info.config(text="Получение токен СУЗ")
+                        driver.get(self.http_okto + self.workshop_id + self.oms_settings + self.oms_id + "/edit")
+                        if wait.until(EC.visibility_of_element_located((By.CLASS_NAME, "oms-auth-btn-container"))).text == "Динамический токен получен":
+                            self.while_run = False
+                        else:
+                            self.label_info.config(text="Получение токен СУЗ")
+                            driver.get(self.http_okto + self.workshop_id + self.oms_settings + self.oms_id + "/edit")
+                            time.sleep(2)
+                            suz_drop = driver.find_element(By.LINK_TEXT, "Сбросить динамический СУЗ токен")
+                            suz_drop.click()
+                            time.sleep(2)
+                            suz_up = driver.find_element(By.LINK_TEXT, "Получить динамический токен")
+                            suz_up.click()
+                            time.sleep(5)
+                    except Exception:
+                        self.label_info.config(text="Не удалось получить токе СУЗ\nПовторная попытка через 30 секунд")
+                        time.sleep(30)
+                self.while_run = True
+                while self.while_run and self.start_thread:
+                    try:
+                        # Переход на страницу заказов для проверки текущего заказа кодов
+                        driver.get(self.http_okto + self.workshop_id + self.http_order)
+                        # Проверка на уже сделанный заказ. Только первый из всего списка
+                        while not self.code_ordered and self.start_thread:
+                            if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == self.code_ready:
+                                self.label_info.config(text="Ожидание завершения прошлого заказа...\n"
+                                                            "Повторная попытка заказа через 30 секунд")
+                                time.sleep(30)
+                                driver.refresh()
+                            else:
+                                # Выходим из цикла проверки
+                                self.code_ordered = True
+                                self.while_run = False
+                    except Exception:
+                        self.label_info.config(text="Не удалось проверить коды\nПовторная попытка через 30 секунд")
+                self.while_run = True
+                while self.while_run and self.start_thread:
+                    self.order_codes(driver, wait, workshop, product)
+                self.while_run = True
+                while self.while_run and self.start_thread:
+                    try:
+                        time.sleep(2)
+                        while self.start_thread and not self.code_ordered:
+                            time.sleep(1)
+                            driver.refresh()
+                            time.sleep(1)
+                            if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == self.code_ready and self.start_thread:
+                                # выбираем новый заказ
+                                wait.until(EC.presence_of_element_located((By.CLASS_NAME, "order-id"))).click()
+                                time.sleep(2)
+                                # ставим галочку, что хотим получить коды
+                                wait.until(EC.presence_of_element_located((By.NAME, "check_gtin"))).click()
+                                time.sleep(2)
+                                driver.find_element(By.ID, value="obtain_identification_codes").click()
+                                time.sleep(2)
+                                # Нажимаем на кнопку для ввода количества кодов
+                                quantity = driver.find_element(By.ID, value="quantity")
+                                time.sleep(2)
+                                quantity.clear()
+                                quantity.send_keys(self.quantity_codes)
+                                time.sleep(2)
+                                driver.find_element(By.ID, value="submit_codes_form").click() # получение кодов из заказа
+                                self.code_ordered = True
+                                time.sleep(6)
+                                self.while_run = False
+                                driver.find_element(By.ID, value="logout_link").click()
+                            elif wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == "Закрыт":
+                                self.while_run = True
+                                while self.while_run and self.start_thread:
+                                    self.order_codes(driver, wait, workshop, product)
+                            else:
+                                self.label_info.config(text="Ожидание появления заказа...")
+                            time.sleep(5)
+                    except Exception as e:
+                        time.sleep(6)
+                        self.label_info.config(text="Не удалось выполнить задачу\nОбъект для заказа не найдет")
+                        with open("logs.txt", "a", encoding="UTF-8") as self.f:
+                            self.f.write(str(datetime.datetime.now()))
+                            self.f.write(str(e))
+                        self.label_text.config(text="Во время заказа кодов продукта:\n"
+                                                    + self.data_products[workshop][str(product)]["name"]
+                                                    + "\nСервер не отвечал" + "\nПовторная попытка получения кодов")
         driver.quit()
-        for button in (self.button_0, self.button_1, self.button_2, self.button_3):
-            button.config(state=tk.NORMAL)
+        self.start_thread = False
         if self.button_stop_flag:
-            self.label_text.config(text=f"Заказы для цеха {workshop} были приостановлены")
-            self.label_info.config(text="Не удалось полностью заказать коды")
-            self.codes_info.config(text=f"Введите количество кодов в заказе")
+            self.label_text.config(text=f"Заказы для цеха {workshop} не завершены")
+            self.label_info.config(text="Выберите другой цех для заказа кодов, или продолжите текущий")
+            self.codes_info.config(text=f"Коды не были получены")
         else:
             self.label_text.config(text=f"Заказы для цеха {workshop} завершены")
             self.label_info.config(text="Выберите другой цех для заказа кодов")
             self.codes_info.config(text=f"Все коды были получены!")
+
+        for button in (self.button_0, self.button_1, self.button_2, self.button_3):
+            button.config(state=tk.NORMAL)
         self.button_stop.config(state=tk.DISABLED)
         self.list_products.clear()
 
