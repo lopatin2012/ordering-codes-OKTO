@@ -1,4 +1,3 @@
-import os
 import threading
 import tkinter as tk
 import json
@@ -10,7 +9,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
 
 
 class App:
@@ -33,6 +31,7 @@ class App:
         self.workshop_login = None
         # пароль личного кабинета
         self.workshop_password = None
+        self.counter_processing = 0
         # флаг на поток
         self.thread = None
         # Количество кодов для заказа
@@ -163,7 +162,6 @@ class App:
                 self.label_info.config(
                     text="Не удалось заказать коды\nПовторная попытка через 30 секунд")
                 time.sleep(30)
-
     def run_task(self, workshop):
         # Выключение всех кнопок
         for button in (self.button_0, self.button_1, self.button_2, self.button_3):
@@ -175,21 +173,26 @@ class App:
         self.workshop_id = self.data_lk[self.workshop_name]["id"]
         self.oms_id = self.data_lk[self.workshop_name]["oms_id"]
         self.quantity_codes = int(self.codes.get())
-        options = webdriver.ChromeOptions()
-        service = Service('./chromedriver.exe')
-        options.add_extension("extension_1_2_13_0.crx")
-        options.add_argument("--start-maximized") # окно на весь экран
-        options.add_argument("--disable-gpu") # уменьшение использования графического процессора
-        options.add_argument("--disable-infobars") # отключение информационной панели
-        options.add_argument("--disable-notifications") # отключение уведомлений
-        options.add_argument("--disable-dev-shm-usage") # отключает использование /dev/shm в Chrome
-        options.add_argument("--no-sandbox") # отключение режима песочницы
-        # options.add_argument('--headless=new') # скрытая работа
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(4)
+        try:
+            options = webdriver.ChromeOptions()
+            options.add_extension("extension_1_2_13_0.crx")
+            options.add_argument("--start-maximized") # окно на весь экран
+            options.add_argument("--disable-gpu") # уменьшение использования графического процессора
+            options.add_argument("--disable-infobars") # отключение информационной панели
+            options.add_argument("--disable-notifications") # отключение уведомлений
+            options.add_argument("--disable-dev-shm-usage") # отключает использование /dev/shm в Chrome
+            options.add_argument("--no-sandbox") # отключение режима песочницы
+            # options.add_argument('--headless=new') # скрытая работа
+            driver = webdriver.Chrome(options=options)
+            driver.set_page_load_timeout(4)
 
-        # Пауза с помощью Selenium 5 секунд
-        wait = WebDriverWait(driver, 3)
+            # Пауза с помощью Selenium 3 секунд
+            wait = WebDriverWait(driver, 3)
+        except Exception as ex:
+            with open("logs.txt", "a", encoding="UTF-8") as self.f:
+                self.label_info.config(text=f"Не удалось запустить браузер\nОшибка {str(ex)[:200]}")
+                self.f.write(str(datetime.datetime.now()) + "\n")
+                self.f.write(str(ex))
         # Если была остановка заказа
         if len(self.list_products) == 0 or workshop != self.last_workshop_name:
             self.list_products.clear()
@@ -234,10 +237,7 @@ class App:
                             self.label_info.config(text="Получение токен СУЗ")
                             driver.get(self.http_okto + self.workshop_id + self.oms_settings + self.oms_id + "/edit")
                             time.sleep(2)
-                            suz_drop = driver.find_element(By.LINK_TEXT, "Сбросить динамический СУЗ токен")
-                            suz_drop.click()
-                            time.sleep(2)
-                            suz_up = driver.find_element(By.LINK_TEXT, "Получить динамический токен")
+                            suz_up = driver.find_element(By.ID, "obtain_oms_token_btn")
                             suz_up.click()
                             time.sleep(5)
                     except Exception:
@@ -272,6 +272,13 @@ class App:
                             time.sleep(1)
                             driver.refresh()
                             time.sleep(1)
+                            if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "order-id"))).text == "Обработка...":
+                                self.counter_processing += 1
+                                if self.counter_processing >= 10:
+                                    wait.until(EC.presence_of_element_located((By.CLASS_NAME, "fa-trash"))).click()
+                                    time.sleep(2)
+                                    driver.switch_to.alert.accept()
+                                    self.counter_processing = 0
                             if wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == self.code_ready and self.start_thread:
                                 # выбираем новый заказ
                                 wait.until(EC.presence_of_element_located((By.CLASS_NAME, "order-id"))).click()
@@ -292,18 +299,19 @@ class App:
                                 time.sleep(6)
                                 self.while_run = False
                                 driver.find_element(By.ID, value="logout_link").click()
+                                self.counter_processing = 0
                             elif wait.until(EC.presence_of_element_located((By.CLASS_NAME, "report-status"))).text == "Закрыт":
                                 self.while_run = True
                                 while self.while_run and self.start_thread:
                                     self.order_codes(driver, wait, workshop, product)
                             else:
                                 self.label_info.config(text="Ожидание появления заказа...")
-                            time.sleep(5)
+                            time.sleep(10)
                     except Exception as e:
                         time.sleep(6)
                         self.label_info.config(text="Не удалось выполнить задачу\nОбъект для заказа не найдет")
                         with open("logs.txt", "a", encoding="UTF-8") as self.f:
-                            self.f.write(str(datetime.datetime.now()))
+                            self.f.write(str(datetime.datetime.now()) + "\n")
                             self.f.write(str(e))
                         self.label_text.config(text="Во время заказа кодов продукта:\n"
                                                     + self.data_products[workshop][str(product)]["name"]
